@@ -7,6 +7,7 @@ from google.adk.agents import Agent, LiveRequestQueue
 from google.adk.runners import Runner
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools import BaseTool
 from google.genai import types
 from dotenv import load_dotenv
 
@@ -21,8 +22,87 @@ from common import (
     SEND_SAMPLE_RATE,
     SYSTEM_INSTRUCTION,
     get_order_status,
-    query_rag_engine,
+    PROJECT_ID,
+    LOCATION,
+    RAG_CORPUS_ID,
 )
+
+
+# Custom RAG Tool for ADK
+class RagKnowledgeTool(BaseTool):
+    """Custom tool for Cymbal Bank RAG knowledge base queries."""
+
+    def __init__(self):
+        super().__init__(
+            name="rag_knowledge_search",
+            description="Search Cymbal Bank's knowledge base for detailed information about products, services, policies, and procedures. Use this tool when customers ask questions that require specific details from our knowledge base."
+        )
+        # Initialize the RAG client
+        self.rag_client = None
+        self._initialize_rag_client()
+
+    def _initialize_rag_client(self):
+        """Initialize the Vertex AI RAG client."""
+        try:
+            from google.cloud import aiplatform_v1
+            from google.api_core import client_options
+
+            # Create client with regional endpoint for RAG service
+            client_options_obj = client_options.ClientOptions(
+                api_endpoint='us-central1-aiplatform.googleapis.com'
+            )
+            self.rag_client = aiplatform_v1.VertexRagDataServiceClient(client_options=client_options_obj)
+            logger.info("RAG client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize RAG client: {e}")
+            self.rag_client = None
+
+    async def run_async(self, query: str, context: str = "") -> str:
+        """Query the RAG knowledge base."""
+        try:
+            if not self.rag_client:
+                return "I'm having trouble accessing our knowledge base right now. Let me help you with general information about Cymbal Bank services."
+
+            # Create the request using dict-based initialization
+            from google.cloud.aiplatform_v1.types import RetrieveContextsRequest
+            
+            # Try the dict approach first
+            try:
+                request = RetrieveContextsRequest({
+                    'vertex_rag_store': RAG_CORPUS_ID,
+                    'query': {
+                        'text': query
+                    }
+                })
+            except Exception as dict_error:
+                logger.warning(f"Dict initialization failed: {dict_error}, trying direct assignment")
+                # Fallback to direct field assignment
+                request = RetrieveContextsRequest()
+                request.vertex_rag_store = RAG_CORPUS_ID
+                from google.cloud.aiplatform_v1.types import RagQuery
+                rag_query = RagQuery()
+                rag_query.text = query
+                request.query.CopyFrom(rag_query)
+
+            # Make the request
+            response = self.rag_client.retrieve_contexts(request=request)
+
+            # Extract results
+            results = []
+            for context_item in response.contexts:
+                if hasattr(context_item, 'text') and context_item.text:
+                    results.append(context_item.text.strip())
+
+            if results:
+                combined_results = "\n\n".join(results[:3])  # Take top 3 results
+                logger.info(f"Successfully retrieved {len(results)} contexts from RAG corpus")
+                return f"Based on our knowledge base: {combined_results}"
+            else:
+                return "I found some information but couldn't retrieve the specific details. Let me help you with general information about Cymbal Bank services."
+
+        except Exception as e:
+            logger.error(f"RAG query failed: {e}")
+            return "I'm having trouble accessing our knowledge base right now. Let me help you with general information about Cymbal Bank services."
 
 
 # Function tool for order status
@@ -54,6 +134,8 @@ def rag_knowledge_search(query: str, context: str = ""):
         Detailed information from the knowledge base relevant to the query
     """
     try:
+        # Import here to avoid circular imports
+        from common import query_rag_engine
         result = query_rag_engine(query, context)
         return result
     except Exception as e:
@@ -72,7 +154,7 @@ class ADKWebSocketServer(BaseWebSocketServer):
             name="customer_service_agent",
             model=MODEL,
             instruction=SYSTEM_INSTRUCTION,
-            tools=[order_status_tool, rag_knowledge_search],
+            tools=[order_status_tool, RagKnowledgeTool()],
         )
 
         # Create session service

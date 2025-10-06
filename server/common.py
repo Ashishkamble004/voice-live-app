@@ -5,9 +5,7 @@ import logging
 import websockets
 import traceback
 from websockets.exceptions import ConnectionClosed
-from google.cloud import aiplatform
-from google.cloud import discoveryengine_v1
-from google.cloud.aiplatform_v1 import RetrieveContextsRequest
+from google.cloud import aiplatform_v1
 import os
 
 # Set up logging
@@ -15,90 +13,70 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Constants
-PROJECT_ID = "sascha-playground-doit"
+PROJECT_ID = "general-ak"
 LOCATION = "us-central1"
 MODEL = "gemini-2.0-flash-live-preview-04-09"
 VOICE_NAME = "Puck"
 
-# RAG Configuration
-RAG_ENGINE_ID = "projects/general-ak/locations/us-central1/ragCorpora/2305843009213693952"  # You'll need to create this
-RAG_DATA_STORE_ID = "cymbal-bank"  # You'll need to create this
-RAG_LOCATION = "us-central1"  # or your preferred location
+# RAG Configuration (now handled by ADK built-in tools)
+RAG_CORPUS_ID = "projects/general-ak/locations/us-central1/ragCorpora/2305843009213693952"
 
 # Audio sample rates for input/output
 RECEIVE_SAMPLE_RATE = 24000  # Rate of audio received from Gemini
 SEND_SAMPLE_RATE = 16000     # Rate of audio sent to Gemini
 
-# Initialize RAG clients
-def initialize_rag_clients():
-    """Initialize Vertex AI and Discovery Engine clients for RAG"""
-    try:
-        # Initialize Vertex AI
-        aiplatform.init(project=PROJECT_ID, location=LOCATION)
-        
-        # Initialize Discovery Engine client
-        client = discoveryengine_v1.SearchServiceClient()
-        
-        logger.info("RAG clients initialized successfully")
-        return client
-    except Exception as e:
-        logger.error(f"Failed to initialize RAG clients: {e}")
-        return None
-
-# Global RAG client
-rag_client = initialize_rag_clients()
-
 def query_rag_engine(query: str, context: str = "") -> str:
     """
     Query the RAG engine for relevant banking information.
-    
+
     Args:
         query: The user's question or query
         context: Additional context for the query
-        
+
     Returns:
         Retrieved information from the knowledge base
     """
     try:
-        if not rag_client:
-            logger.warning("RAG client not initialized, falling back to default response")
-            return "I apologize, but I'm unable to access our knowledge base at the moment. Please contact our customer service for detailed information."
-        
-        # Construct the search request
-        serving_config = f"projects/{PROJECT_ID}/locations/{RAG_LOCATION}/collections/default_collection/engines/{RAG_ENGINE_ID}/servingConfigs/default_config"
-        
-        request = discoveryengine_v1.SearchRequest(
-            serving_config=serving_config,
-            query=query,
-            page_size=5,  # Limit number of results
-            safe_search=True,
-            user_labels={"environment": "production"},
-        )
-        
-        # Perform the search
-        response = rag_client.search(request)
-        
-        # Extract and format the results
-        results = []
-        for result in response.results:
-            if hasattr(result.document, 'derived_struct_data'):
-                content = result.document.derived_struct_data.get('snippets', [])
-                for snippet in content:
-                    if 'snippet' in snippet:
-                        results.append(snippet['snippet'])
-            elif hasattr(result.document, 'struct_data'):
-                # Alternative way to extract content
-                content = result.document.struct_data
-                if content:
-                    results.append(str(content))
-        
-        if results:
-            # Combine and format results
-            combined_results = "\n".join(results[:3])  # Take top 3 results
-            return f"Based on our knowledge base: {combined_results}"
-        else:
-            return "I couldn't find specific information about that in our knowledge base. Let me help you with what I know about Cymbal Bank services."
-            
+        # Try to query the actual RAG corpus first
+        try:
+            from google.cloud import aiplatform_v1
+            from google.api_core import client_options
+
+            # Create client with regional endpoint for RAG service
+            client_options_obj = client_options.ClientOptions(
+                api_endpoint='us-central1-aiplatform.googleapis.com'
+            )
+            client = aiplatform_v1.VertexRagDataServiceClient(client_options=client_options_obj)
+
+            # Create the request using dict-based initialization
+            request = aiplatform_v1.RetrieveContextsRequest({
+                'vertex_rag_store': RAG_CORPUS_ID,
+                'query': {
+                    'text': query
+                }
+            })
+
+            # Make the request
+            response = client.retrieve_contexts(request=request)
+
+            # Extract results
+            results = []
+            for context_item in response.contexts:
+                if hasattr(context_item, 'text') and context_item.text:
+                    results.append(context_item.text.strip())
+
+            if results:
+                # Return the actual RAG results
+                combined_results = "\n\n".join(results[:3])  # Take top 3 results
+                logger.info(f"Successfully retrieved {len(results)} contexts from RAG corpus")
+                return f"Based on our knowledge base: {combined_results}"
+
+        except Exception as rag_error:
+            logger.warning(f"RAG corpus query failed: {rag_error}, falling back to knowledge base")
+
+        # If RAG corpus fails completely, return a generic message
+        return "I'm having trouble accessing our knowledge base right now. Let me help you with general information about Cymbal Bank services."
+    
     except Exception as e:
         logger.error(f"Error querying RAG engine: {e}")
         return "I'm having trouble accessing our knowledge base right now. Let me provide you with general information about Cymbal Bank services."
@@ -170,8 +148,10 @@ SYSTEM_INSTRUCTION = """
     Important Instructions:
     - Put a lot of emotions and fun in your response to the customer. Laugh, be happy, smile.
     - You only answer questions related to Cymbal Bank
-    - When customers ask questions, use the RAG system to search our knowledge base for the most accurate and up-to-date information
-    - Combine knowledge base results with the information below to provide comprehensive answers
+    - You have access to Cymbal Bank's comprehensive knowledge base through the retrieval tool
+    - When customers ask questions about bank products, services, policies, or procedures, use the retrieval tool to get accurate, up-to-date information from our knowledge base
+    - Combine retrieved knowledge base information with your general knowledge to provide comprehensive, helpful answers
+    - If you need specific details about credit cards, accounts, loans, or services, always check the knowledge base first
 
     About Cymbal Bank:
     Cymbal Bank is a leading financial institution known for its customer-centric approach and innovative banking solutions. Established in 1990, Cymbal Bank has grown to become one of the most trusted names in the banking industry, offering a wide range of services including personal banking, business banking, loans, mortgages, and investment services.
@@ -212,6 +192,7 @@ def get_order_status(order_id: str) -> str:
 
 
 # Base WebSocket server class that handles common functionality
+class BaseWebSocketServer:
     def __init__(self, host="0.0.0.0", port=8765):
         self.host = host
         self.port = port
