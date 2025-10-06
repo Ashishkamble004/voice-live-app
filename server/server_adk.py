@@ -21,6 +21,7 @@ from common import (
     SEND_SAMPLE_RATE,
     SYSTEM_INSTRUCTION,
     get_order_status,
+    query_rag_engine,
 )
 
 
@@ -37,6 +38,29 @@ def order_status_tool(order_id: str):
     return get_order_status(order_id)
 
 
+# Function tool for RAG queries
+def rag_knowledge_search(query: str, context: str = ""):
+    """Search Cymbal Bank's knowledge base for detailed information.
+
+    Use this tool when customers ask questions about bank policies, products, 
+    services, procedures, or any banking-related information that may require 
+    specific details from our knowledge base.
+
+    Args:
+        query: The customer's question or search query
+        context: Additional context about the customer's situation (optional)
+
+    Returns:
+        Detailed information from the knowledge base relevant to the query
+    """
+    try:
+        result = query_rag_engine(query, context)
+        return result
+    except Exception as e:
+        logger.error(f"Error in RAG knowledge search: {e}")
+        return "I apologize, but I'm having trouble accessing our knowledge base right now. Let me help you with general information about Cymbal Bank services."
+
+
 class ADKWebSocketServer(BaseWebSocketServer):
     """WebSocket server implementation using Google ADK."""
 
@@ -48,7 +72,7 @@ class ADKWebSocketServer(BaseWebSocketServer):
             name="customer_service_agent",
             model=MODEL,
             instruction=SYSTEM_INSTRUCTION,
-            tools=[order_status_tool],
+            tools=[order_status_tool, rag_knowledge_search],
         )
 
         # Create session service
