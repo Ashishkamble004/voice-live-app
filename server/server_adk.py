@@ -35,7 +35,7 @@ def order_status_tool(order_id: str):
         order_id: The order ID to look up.
 
     Returns:
-        Dictionary containing order status details
+        String containing order/transaction status details
     """
     return get_order_status(order_id)
 
