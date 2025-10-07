@@ -7,6 +7,7 @@ from google.adk.agents import Agent, LiveRequestQueue
 from google.adk.runners import Runner
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools import VertexAiSearchTool
 from google.genai import types
 from dotenv import load_dotenv
 
@@ -46,17 +47,9 @@ class ADKWebSocketServer(BaseWebSocketServer):
     def __init__(self, host="0.0.0.0", port=8765):
         super().__init__(host, port)
 
-        # Define RAG tool
-        rag_tool = types.Tool(
-            retrieval=types.Retrieval(
-                vertex_rag_store=types.VertexRagStore(
-                    rag_resources=[
-                        types.VertexRagStoreRagResource(
-                            rag_corpus="projects/general-ak/locations/us-central1/ragCorpora/2305843009213693952"
-                        )
-                    ]
-                )
-            )
+        # RAG tool using Vertex AI Search
+        rag_tool = VertexAiSearchTool(
+            data_store_id=RAG_CORPUS_ID
         )
 
         # Initialize ADK components
